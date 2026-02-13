@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  ai-core:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai-core
+    container_name: ai_core
+    restart: unless-stopped
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - OLLAMA_MODELS=/data/models
+    volumes:
+      - ./data/models:/data/models
+      - ./data/cache:/data/cache
+      - ./configs:/app/configs
+      - ./src:/app/src
+    ports:
+      - "11434:11434"
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - redis
+      - postgres
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis_ai
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_/data
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_ai
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=ai_corp
+      - POSTGRES_PASSWORD=secure_password_here      - POSTGRES_DB=ai_corporation
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio_ai
+    restart: unless-stopped
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123456
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_/data
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram
+    container_name: telegram_bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=your_bot_token_here
+      - AI_CORE_URL=http://ai-core:8000
+    depends_on:
+      - ai-core
+      - redis
+
+volumes:
+  redis_
+  postgres_
+  minio_

@@ -1,0 +1,30 @@
+# Core AI
+ollama==0.1.8
+transformers==4.37.0
+torch==2.1.0
+
+# Web Framework
+fastapi==0.109.0
+uvicorn==0.27.0
+pydantic==2.5.3
+
+# Database
+redis==5.0.1
+asyncpg==0.29.0
+sqlalchemy==2.0.25
+
+# API Clients
+httpx==0.26.0
+anthropic==0.19.1
+openai==1.10.0
+
+# Utilities
+python-dotenv==1.0.0
+pyyaml==6.0.1
+loguru==0.7.2
+aiofiles==23.2.1
+aiogram==3.4.1
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
