@@ -1,0 +1,33 @@
+# Dockerfile для веб-панели
+
+FROM python:3.10-slim
+
+# Установка зависимостей
+RUN apt-get update && apt-get install -y \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создание рабочей директории
+WORKDIR /app
+
+# Копирование зависимостей
+COPY requirements.txt .
+
+# Установка Python зависимостей
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Создание директорий для веб-интерфейса
+RUN mkdir -p web/templates web/static
+
+# Копирование исходного кода
+COPY src/ ./src/
+COPY web/ ./web/
+
+# Переменные окружения
+ENV PYTHONUNBUFFERED=1
+
+# Экспозиция порта
+EXPOSE 8080
+
+# Запуск веб-панели
+CMD ["python", "-m", "src.interfaces.web_panel"]

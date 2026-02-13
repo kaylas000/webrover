@@ -1,0 +1,53 @@
+# Конфигурация моделей ИИ-Корпорации
+
+gpu:
+  max_vram_gb: 24
+  reserved_vram_gb: 2
+  available_vram_gb: 22
+
+models:
+  base:
+    deepseek-coder-1.3b:
+      name: "deepseek-coder"
+      type: "text"
+      vram_gb: 1.5
+      quantization: "q4_K_M"
+      priority: 1
+      always_loaded: true
+  
+  priority:
+    deepseek-coder-33b:
+      name: "deepseek-coder"
+      type: "text"
+      vram_gb: 20.0
+      quantization: "q4_K_M"
+      priority: 2
+      always_loaded: false
+    
+    qwen3-omni-14b:
+      name: "qwen3"
+      type: "text"
+      vram_gb: 9.0
+      quantization: "q5_K_M"
+      priority: 2
+      always_loaded: false
+    
+    flux-1-kontext:
+      name: "flux-1-kontext"
+      type: "image"
+      vram_gb: 12.0
+      quantization: "q8_0"
+      priority: 2
+      always_loaded: false
+
+model_routing:
+  content:
+    simple: "qwen3-omni-14b"
+    complex: "cloud:claude-4.5-sonnet"
+  
+  code:
+    simple: "deepseek-coder-1.3b"
+    complex: "deepseek-coder-33b"
+  
+  design:
+    images: "flux-1-kontext"

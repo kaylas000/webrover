@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}AI Corporation - Models{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1>Models</h1>
+        
+        {% if gpu_status %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3>GPU Status</h3>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h5>Memory Usage</h5>
+                        <div class="progress">
+                            <div class="progress-bar bg-success" 
+                                 style="width: {{ (gpu_status.used_vram_gb / gpu_status.total_vram_gb * 100) | round(1) }}%">
+                                {{ gpu_status.used_vram_gb | round(1) }} GB / {{ gpu_status.total_vram_gb }} GB
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <h5>Loaded Models ({{ gpu_status.model_count }})</h5>
+                        {% if gpu_status.loaded_models %}
+                        <ul class="list-group">
+                            {% for model in gpu_status.loaded_models %}
+                            <li class="list-group-item">{{ model.name }} ({{ model.vram_gb }} GB)</li>
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        <p class="text-muted">No models loaded</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Local Models</h3>
+                    </div>
+                    <div class="card-body">
+                        {% if models_info.local_available %}
+                        <ul class="list-group">
+                            {% for model in models_info.local_available %}
+                            <li class="list-group-item">{{ model }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        <p class="text-muted">No local models available</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Cloud Models</h3>
+                    </div>
+                    <div class="card-body">
+                        {% if models_info.cloud_available %}
+                        <ul class="list-group">
+                            {% for model in models_info.cloud_available %}
+                            <li class="list-group-item">{{ model }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        <p class="text-muted">No cloud models configured</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card mt-4">
+            <div class="card-header">
+                <h3>Model Configuration</h3>
+            </div>
+            <div class="card-body">
+                <p>Model routing is automatically managed based on task complexity and available resources.</p>
+                <p>Local models are preferred for cost efficiency, cloud models are used for complex tasks requiring high quality.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

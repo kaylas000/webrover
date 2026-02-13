@@ -1,0 +1,57 @@
+/* Custom styles for AI Corporation Web Panel */
+
+body {
+    background-color: #f8f9fa;
+}
+
+.navbar-brand {
+    font-weight: bold;
+}
+
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    margin-bottom: 1.5rem;
+}
+
+.alert {
+    margin-bottom: 1rem;
+}
+
+.table-responsive {
+    margin-top: 1rem;
+}
+
+.display-4 {
+    font-size: 2rem;
+    font-weight: bold;
+    margin: 0;
+}
+
+.progress {
+    height: 25px;
+}
+
+.list-group-item {
+    border-left: 0;
+    border-right: 0;
+}
+
+.btn-outline-primary:hover {
+    background-color: #0d6efd;
+    color: white;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .container {
+        padding: 0 10px;
+    }
+    
+    .alert {
+        font-size: 0.9rem;
+    }
+    
+    .display-4 {
+        font-size: 1.5rem;
+    }
+}

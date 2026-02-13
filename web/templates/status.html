@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}AI Corporation - Status{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1>System Status</h1>
+        
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3>System Overview</h3>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="alert alert-info">
+                            <h5>Total Missions</h5>
+                            <p class="display-4">{{ system_status.missions_count }}</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="alert alert-primary">
+                            <h5>Active Tasks</h5>
+                            <p class="display-4">{{ system_status.queue.get("running_tasks", 0) }}</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="alert alert-warning">
+                            <h5>Pending Tasks</h5>
+                            <p class="display-4">{{ system_status.queue.get("pending_tasks", 0) }}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        {% if system_status.queue %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3>Task Queue</h3>
+            </div>
+            <div class="card-body">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>                    <tbody>
+                        <tr>
+                            <td>Total Tasks</td>
+                            <td>{{ system_status.queue.total_tasks }}</td>
+                        </tr>
+                        <tr>
+                            <td>Pending Tasks</td>
+                            <td>{{ system_status.queue.pending_tasks }}</td>
+                        </tr>
+                        <tr>
+                            <td>Running Tasks</td>
+                            <td>{{ system_status.queue.running_tasks }}</td>
+                        </tr>
+                        <tr>
+                            <td>Max Concurrent</td>
+                            <td>{{ system_status.queue.max_concurrent }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if system_status.gpu %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3>GPU Resources</h3>
+            </div>
+            <div class="card-body">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Resource</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Total VRAM</td>
+                            <td>{{ system_status.gpu.total_vram_gb }} GB</td>
+                        </tr>
+                        <tr>
+                            <td>Used VRAM</td>
+                            <td>{{ system_status.gpu.used_vram_gb | round(1) }} GB</td>
+                        </tr>
+                        <tr>
+                            <td>Available VRAM</td>
+                            <td>{{ system_status.gpu.available_vram_gb | round(1) }} GB</td>
+                        </tr>
+                        <tr>                            <td>Loaded Models</td>
+                            <td>{{ system_status.loaded_models | length }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                {% if system_status.loaded_models %}
+                <h5>Loaded Models</h5>
+                <ul class="list-group">
+                    {% for model in system_status.loaded_models %}
+                    <li class="list-group-item">{{ model }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="card">
+            <div class="card-header">
+                <h3>System Health</h3>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-success">
+                    <h5>✅ System is operational</h5>
+                    <p>Last updated: {{ system_status.timestamp | timestamp_to_datetime }}</p>
+                </div>
+                <p>System is running normally with all components active.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

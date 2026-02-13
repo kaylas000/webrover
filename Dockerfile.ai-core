@@ -1,0 +1,54 @@
+# Dockerfile для AI Core контейнера
+
+# Базовый образ с CUDA
+FROM nvidia/cuda:12.2.0-base-ubuntu22.04
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    python3-venv \
+    git \
+    curl \
+    wget \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка Ollama
+RUN curl -fsSL https://ollama.com/install.sh | sh
+
+# Создание рабочей директории
+WORKDIR /app
+
+# Копирование зависимостей
+COPY requirements.txt .
+COPY configs/ ./configs/
+
+# Создание виртуального окружения
+RUN python3 -m venv venv
+ENV PATH="/app/venv/bin:$PATH"
+
+# Установка Python зависимостей
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+
+# Копирование исходного кода
+COPY src/ ./src/
+
+# Создание директорий для данных
+RUN mkdir -p /data/models /data/cache /data/outputs
+
+# Экспозиция портов
+EXPOSE 11434  # Ollama API
+EXPOSE 8000   # FastAPI
+
+# Переменные окружения
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Запуск сервисов
+CMD ["bash", "-c", "\
+    ollama serve & \
+    sleep 5 && \
+    python -m src.main \
+"]

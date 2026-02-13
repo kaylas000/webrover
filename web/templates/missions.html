@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}AI Corporation - Missions{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1>Missions</h1>
+        
+        {% if missions %}
+        <div class="table-responsive">
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Description</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for mission in missions %}
+                    <tr>
+                        <td><code>{{ mission.id }}</code></td>
+                        <td>{{ mission.description[:100] }}{% if mission.description|length > 100 %}...{% endif %}</td>
+                        <td>
+                            <span class="badge 
+                                {% if mission.status == "completed" %}bg-success
+                                {% elif mission.status == "running" %}bg-primary
+                                {% elif mission.status == "failed" %}bg-danger
+                                {% elif mission.status == "pending" %}bg-warning
+                                {% else %}bg-secondary{% endif %}">
+                                {{ mission.status }}
+                            </span>
+                        </td>
+                        <td>{{ mission.created_at }}</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-primary" onclick="viewMission({{ mission.id }})">
+                                View Details
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            <h4>No missions found</h4>
+            <p>Create your first mission from the Dashboard.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function viewMission(missionId) {
+    // Redirect to mission details page (to be implemented)
+    alert(Mission details for:  + missionId);
+}
+</script>
+{% endblock %}
