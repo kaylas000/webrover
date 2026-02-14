@@ -1,82 +1,88 @@
 """
-Main entry point for AI Corporation
+ИИ-Корпорация 2.0 — Main Entry Point
+Запуск всей системы
 """
-
 import asyncio
-import sys
+import uvicorn
 from loguru import logger
 
-from .core.model_router import ModelRouter
-from .core.task_queue import TaskQueue
-from .agents.ceo_agent import CEOAgent
+from src.core.config import settings
+from src.core.gpu_manager import GPUManager
+from src.core.model_router import ModelRouter
+from src.core.task_queue import TaskQueue
+from src.agents.ceo_agent import CEOAgent
+from src.agents.content_agent import ContentAgent
+from src.agents.devops_agent import DevOpsAgent
+from src.interfaces.telegram_bot import TelegramInterface
+from src.interfaces.api_gateway import create_api
 
 
-class AICorporation:
-    """Основной класс ИИ-Корпорации"""
-    
-    def __init__(self):
-        self.model_router = None
-        self.task_queue = None
-        self.ceo_agent = None
-        self.shutdown_event = asyncio.Event()
-        
-        logger.info("AI Corporation initializing...")
-    
-    async def initialize(self):
-        """Инициализация всех компонентов"""
-        logger.info("Initializing Model Router...")
-        self.model_router = ModelRouter()
-        
-        logger.info("Initializing Task Queue...")
-        self.task_queue = TaskQueue(
-            redis_url="redis://redis:6379",
-            max_concurrent_tasks=3
+async def main():
+    """Точка входа ИИ-Корпорации 2.0"""
+
+    # Настройка логирования
+    logger.add(
+        f"{settings.logs_dir}/ai_corp_{{time}}.log",
+        rotation="100 MB",
+        retention="30 days",
+        level="INFO",
+    )
+
+    logger.info("=" * 60)
+    logger.info("🤖 ИИ-Корпорация 2.0 — Запуск")
+    logger.info("=" * 60)
+
+    # 1. Инициализация ядра
+    gpu_manager = GPUManager()
+    model_router = ModelRouter(gpu_manager)
+    task_queue = TaskQueue()
+
+    # 2. Запуск очереди задач
+    await task_queue.start(num_workers=settings.max_concurrent_tasks)
+
+    # 3. Инициализация агентов
+    content_agent = ContentAgent(model_router, task_queue)
+    devops_agent = DevOpsAgent(model_router, task_queue)
+
+    ceo = CEOAgent(model_router, task_queue)
+    ceo.register_agent("content_agent", content_agent)
+    ceo.register_agent("devops_agent", devops_agent)
+
+    # 4. Запуск интерфейсов
+    telegram = TelegramInterface(ceo)
+    api_app = create_api(ceo)
+
+    logger.info("✅ All components initialized")
+
+    # Проверяем GPU
+    gpu_status = await gpu_manager.get_status()
+    logger.info(
+        f"🖥 GPU: {gpu_status.free_vram_gb:.1f}GB free / "
+        f"{gpu_status.total_vram_gb:.1f}GB total"
+    )
+
+    # Запускаем все сервисы параллельно
+    try:
+        await asyncio.gather(
+            # Telegram Bot
+            telegram.start(),
+
+            # FastAPI в отдельном потоке
+            asyncio.to_thread(
+                uvicorn.run,
+                api_app,
+                host="0.0.0.0",
+                port=8000,
+                log_level="info",
+            ),
         )
-        await self.task_queue.connect()
-        
-        logger.info("Initializing CEO Agent...")
-        self.ceo_agent = CEOAgent(
-            model_router=self.model_router,
-            task_queue=self.task_queue
-        )
-        
-        logger.success("AI Corporation initialized successfully!")
-    
-    async def start(self):
-        """Запуск всех сервисов"""
-        logger.info("Starting AI Corporation services...")
-        
-        queue_task = asyncio.create_task(
-            self.task_queue.process_queue(self._task_handler)
-        )
-        
-        try:
-            await self.shutdown_event.wait()
-        except KeyboardInterrupt:
-            logger.info("Shutdown signal received...")
-        finally:
-            await self.stop()
-            queue_task.cancel()
-    
-    async def _task_handler(self, task):
-        """Обработчик задач"""
-        logger.info(f"Processing task: {task.id}")
-        return {"status": "completed", "result": "Task processed"}
-    
-    async def stop(self):
-        """Остановка всех сервисов"""
-        logger.info("Stopping AI Corporation services...")
-        if self.task_queue:
-            await self.task_queue.disconnect()
-        logger.success("AI Corporation stopped successfully!")
-
-
-def main():
-    """Точка входа"""
-    corporation = AICorporation()
-    asyncio.run(corporation.initialize())
-    asyncio.run(corporation.start())
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    finally:
+        await task_queue.stop()
+        await telegram.stop()
+        logger.info("🛑 ИИ-Корпорация 2.0 остановлена")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
