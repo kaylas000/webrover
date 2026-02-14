@@ -1,23 +1,23 @@
-version: '3.8'
+version: "3.9"
 
 services:
-  ai-core:
+  # === AI Corporation Core ===
+  ai-corp:
     build:
       context: .
-      dockerfile: Dockerfile.ai-core
-    container_name: ai_core
+      dockerfile: Dockerfile
+    container_name: ai-corporation
     restart: unless-stopped
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - OLLAMA_MODELS=/data/models
-    volumes:
-      - ./data/models:/data/models
-      - ./data/cache:/data/cache
-      - ./configs:/app/configs
-      - ./src:/app/src
     ports:
-      - "11434:11434"
       - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./output:/opt/ai-corp/output
+      - ./logs:/opt/ai-corp/logs
+    depends_on:
+      - postgres
+      - redis
+      - ollama
     deploy:
       resources:
         reservations:
@@ -25,58 +25,61 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    depends_on:
-      - redis
-      - postgres
+    networks:
+      - ai-network
 
+  # === Ollama (Local LLM) ===
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - ai-network
+
+  # === PostgreSQL ===
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-corp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ai_corporation
+      POSTGRES_USER: ai_corp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - ai-network
+
+  # === Redis ===
   redis:
     image: redis:7-alpine
-    container_name: redis_ai
+    container_name: ai-corp-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
-      - redis_/data
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: postgres_ai
-    restart: unless-stopped
-    environment:
-      - POSTGRES_USER=ai_corp
-      - POSTGRES_PASSWORD=secure_password_here      - POSTGRES_DB=ai_corporation
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_/var/lib/postgresql/data
-
-  minio:
-    image: minio/minio:latest
-    container_name: minio_ai
-    restart: unless-stopped
-    environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin123456
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_/data
-
-  telegram-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile.telegram
-    container_name: telegram_bot
-    restart: unless-stopped
-    environment:
-      - TELEGRAM_BOT_TOKEN=your_bot_token_here
-      - AI_CORE_URL=http://ai-core:8000
-    depends_on:
-      - ai-core
-      - redis
+      - redis-data:/data
+    networks:
+      - ai-network
 
 volumes:
-  redis_
-  postgres_
-  minio_
+  ollama-models:
+  postgres-data:
+  redis-data:
+
+networks:
+  ai-network:
+    driver: bridge
