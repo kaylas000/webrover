@@ -1,395 +1,209 @@
 """
-Telegram Bot - интерфейс управления ИИ-Корпорацией
+ИИ-Корпорация 2.0 — Telegram Bot
+Основной интерфейс управления через Telegram
 """
-
 import asyncio
-import logging
-from typing import Dict, Optional, Callable
-from loguru import logger
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import json
+from loguru import logger
 
-from ..agents.ceo_agent import CEOAgent
-from ..core.task_queue import TaskQueue
+from src.core.config import settings
+from src.agents.ceo_agent import CEOAgent
 
 
-class TelegramBot:
+class TelegramInterface:
     """Telegram бот для управления ИИ-Корпорацией"""
-    
-    def __init__(
-        self,
-        token: str,
-        ceo_agent: Optional[CEOAgent] = None,
-        task_queue: Optional[TaskQueue] = None
-    ):
-        self.bot = Bot(token=token)
+
+    def __init__(self, ceo: CEOAgent):
+        self.bot = Bot(token=settings.telegram_bot_token)
         self.dp = Dispatcher()
-        
-        self.ceo_agent = ceo_agent
-        self.task_queue = task_queue
-        
-        # Администраторы бота
-        self.admins: list = []
-        
-        # Регистрируем обработчики
-        self._register_handlers()
-        
-        logger.info("Telegram Bot initialized")
-    
-    def _register_handlers(self):
+        self.ceo = ceo
+        self._active_missions: dict[int, str] = {}
+        self._setup_handlers()
+
+    def _setup_handlers(self):
         """Регистрация обработчиков команд"""
-        
+
         @self.dp.message(Command("start"))
         async def cmd_start(message: types.Message):
-            """Обработчик команды /start"""
-            await self._handle_start(message)
-        
-        @self.dp.message(Command("status"))        async def cmd_status(message: types.Message):
-            """Обработчик команды /status"""
-            await self._handle_status(message)
-        
+            await message.answer(
+                "🤖 **ИИ-Корпорация 2.0**\n\n"
+                "Я — ваша AI-команда. Отправьте мне задачу:\n\n"
+                "📝 Просто напишите что нужно сделать\n"
+                "📊 /status — статус системы\n"
+                "📋 /missions — активные миссии\n"
+                "❓ /help — справка\n\n"
+                "Примеры:\n"
+                "• \"Напиши статью про нейросети на 2000 слов\"\n"
+                "• \"Создай REST API на Python для todo-приложения\"\n"
+                "• \"Переведи текст на английский: ...\"",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+        @self.dp.message(Command("status"))
+        async def cmd_status(message: types.Message):
+            if not self._is_admin(message.from_user.id):
+                await message.answer("⛔ Доступ только для администратора")
+                return
+
+            gpu_status = await self.ceo.router.gpu.get_status()
+            queue_stats = self.ceo.task_queue.get_stats()
+            router_stats = self.ceo.router.get_stats()
+
+            text = (
+                f"📊 **Статус системы**\n\n"
+                f"🖥 **GPU:**\n"
+                f"  VRAM: {gpu_status.used_vram_gb:.1f}/{gpu_status.total_vram_gb:.1f} GB\n"
+                f"  Температура: {gpu_status.temperature}°C\n"
+                f"  Загрузка: {gpu_status.utilization}%\n"
+                f"  Модели: {', '.join(gpu_status.loaded_models) or 'нет'}\n\n"
+                f"📋 **Очередь:**\n"
+                f"  Активных: {queue_stats['active_tasks']}\n"
+                f"  В очереди: {queue_stats['pending_tasks']}\n"
+                f"  Выполнено: {queue_stats['total_completed']}\n"
+                f"  Ошибок: {queue_stats['total_failed']}\n\n"
+                f"💰 **Расходы:** ${router_stats['total_cost_usd']:.4f}\n"
+                f"📨 **Запросов:** {router_stats['total_requests']}"
+            )
+            await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
         @self.dp.message(Command("missions"))
         async def cmd_missions(message: types.Message):
-            """Обработчик команды /missions"""
-            await self._handle_missions(message)
-        
+            tasks = self.ceo.task_queue.get_all_tasks()
+            if not tasks:
+                await message.answer("📋 Нет активных миссий")
+                return
+
+            text = "📋 **Миссии:**\n\n"
+            status_emoji = {
+                "pending": "⏳", "running": "🔄", "completed": "✅",
+                "failed": "❌", "retrying": "🔁",
+            }
+            for t in tasks[-10:]:
+                emoji = status_emoji.get(t["status"], "❓")
+                duration = f" ({t['duration']:.0f}s)" if t.get("duration") else ""
+                text += f"{emoji} `{t['id']}` {t['name'][:40]}{duration}\n"
+
+            await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
         @self.dp.message(Command("help"))
         async def cmd_help(message: types.Message):
-            """Обработчик команды /help"""
-            await self._handle_help(message)
-        
-        @self.dp.callback_query(lambda c: c.data.startswith("approve_"))
-        async def handle_approve(callback_query: types.CallbackQuery):
-            """Обработчик подтверждения задач"""
-            await self._handle_approve(callback_query)
-        
-        @self.dp.callback_query(lambda c: c.data.startswith("reject_"))
-        async def handle_reject(callback_query: types.CallbackQuery):
-            """Обработчик отклонения задач"""
-            await self._handle_reject(callback_query)
-        
-        @self.dp.message()
-        async def handle_text(message: types.Message):
-            """Обработчик текстовых сообщений"""
-            await self._handle_text(message)
-    
-    async def _handle_start(self, message: types.Message):
-        """Обработчик команды /start"""
-        
-        welcome_text = """
-🤖 Добро пожаловать в ИИ-Корпорацию!
-
-Я - ваш личный ассистент для управления автоматизированной командой ИИ-агентов.
-
-📋 Доступные команды:
-• /start - Начать работу
-• /status - Статус системы
-• /missions - Список миссий
-• /help - Помощь
-
-💬 Просто напишите задачу, и я передам её команде!
-        
-Примеры задач:
-• "Создай 5 статей про криптовалюты"
-• "Обнови кликер-игру, добавь систему достижений"
-• "Сделай баннеры и посты для соцсетей"
-        """        
-        await message.answer(welcome_text)
-    
-    async def _handle_status(self, message: types.Message):
-        """Обработчик команды /status"""
-        
-        if not self.ceo_agent or not self.task_queue:
-            await message.answer("⚠️ Система не инициализирована")
-            return
-        
-        # Получаем статус
-        queue_status = self.task_queue.get_queue_status()
-        
-        status_text = f"""
-📊 Статус ИИ-Корпорации
-
-Очередь задач:
-• Всего задач: {queue_status["total_tasks"]}
-• В ожидании: {queue_status["pending_tasks"]}
-• В работе: {queue_status["running_tasks"]}
-• Максимум одновременно: {queue_status["max_concurrent"]}
-
-Загруженные модели:
-"""
-        
-        # Добавляем информацию о моделях
-        if self.ceo_agent and hasattr(self.ceo_agent.model_router, "gpu_manager"):
-            gpu_status = self.ceo_agent.model_router.gpu_manager.get_status()
-            status_text += f"\nВидеопамять:"
-            status_text += f"\n• Использовано: {gpu_status["used_vram_gb"]:.1f} ГБ"
-            status_text += f"\n• Доступно: {gpu_status["available_vram_gb"]:.1f} ГБ"
-            status_text += f"\n• Загружено моделей: {gpu_status["model_count"]}"
-        
-        await message.answer(status_text)
-    
-    async def _handle_missions(self, message: types.Message):
-        """Обработчик команды /missions"""
-        
-        if not self.ceo_agent:
-            await message.answer("⚠️ CEO агент не инициализирован")
-            return
-        
-        missions = self.ceo_agent.get_all_missions()
-        
-        if not missions:
-            await message.answer("📭 Нет активных миссий")
-            return
-        
-        missions_text = "📋 Список миссий:\n\n"
-                for mission in missions[-10:]:  # Последние 10 миссий
-            status_emoji = {
-                "pending": "⏳",
-                "running": "🚀",
-                "completed": "✅",
-                "failed": "❌"
-            }.get(mission["status"], "❓")
-            
-            missions_text += f"{status_emoji} {mission["id"]}\n"
-            missions_text += f"   Описание: {mission["description"][:50]}...\n"
-            missions_text += f"   Статус: {mission["status"]}\n\n"
-        
-        await message.answer(missions_text)
-    
-    async def _handle_help(self, message: types.Message):
-        """Обработчик команды /help"""
-        
-        help_text = """
-📖 Помощь по ИИ-Корпорации
-
-🎯 Как работать с ботом:
-
-1. Просто напишите задачу на русском языке
-   Пример: "Создай статью про блокчейн"
-
-2. Укажите параметры через запятые
-   Пример: "5 статей, криптовалюты, 2000 слов"
-
-3. Используйте команды:
-   • /status - проверить статус системы
-   • /missions - список миссий
-   • /help - эта справка
-
-💡 Типы задач:
-• Контент: статьи, посты, переводы
-• Код: программы, скрипты, функции
-• Дизайн: баннеры, изображения
-• Маркетинг: посты, аналитика
-
-⚡ Система автоматически:
-• Разобьет задачу на подзадачи
-• Распределит между агентами
-• Отправит на утверждение при необходимости
-• Отправит результат
-
-❓ Вопросы? Напишите "помощь" или "примеры"
-        """
-        
-        await message.answer(help_text)
-        async def _handle_text(self, message: types.Message):
-        """Обработчик текстовых сообщений"""
-        
-        user_text = message.text.strip()
-        
-        # Проверяем служебные команды
-        if user_text.lower() in ["помощь", "help"]:
-            await self._handle_help(message)
-            return
-        
-        if user_text.lower() in ["статус", "status"]:
-            await self._handle_status(message)
-            return
-        
-        if user_text.lower() in ["миссии", "missions"]:
-            await self._handle_missions(message)
-            return
-        
-        if user_text.lower() in ["примеры", "examples"]:
-            await self._handle_examples(message)
-            return
-        
-        # Обрабатываем как новую миссию
-        await self._handle_new_mission(message, user_text)
-    
-    async def _handle_examples(self, message: types.Message):
-        """Показать примеры задач"""
-        
-        examples_text = """
-📝 Примеры задач для ИИ-Корпорации:
-
-📋 Контент:
-• "Напиши статью про искусственный интеллект, 1500 слов"
-• "Создай 5 постов для Телеграм о криптовалютах"
-• "Переведи этот текст на английский"
-
-💻 Код:
-• "Напиши функцию на Python для генерации паролей"
-• "Создай React компонент для формы регистрации"
-• "Напиши скрипт для парсинга веб-сайта"
-
-🎨 Дизайн:
-• "Создай баннер 1200x600 для статьи о технологиях"
-• "Сделай обложку для поста в соцсетях"
-
-🎮 Игры:
-• "Добавь в кликер систему достижений"
-• "Создай новую механику для блокчейн-игры"
-
-📊 Аналитика:• "Проанализируй статистику за неделю"
-• "Сделай отчет по эффективности постов"
-
-Просто напишите задачу, и я передам её команде! 🚀
-        """
-        
-        await message.answer(examples_text)
-    
-    async def _handle_new_mission(self, message: types.Message, description: str):
-        """Обработать новую миссию"""
-        
-        if not self.ceo_agent:
-            await message.answer("⚠️ CEO агент не инициализирован")
-            return
-        
-        # Отправляем сообщение о принятии задачи
-        processing_msg = await message.answer("🚀 Принимаю задачу, анализирую...")
-        
-        try:
-            # Передаем задачу CEO агенту
-            mission_id = await self.ceo_agent.receive_mission(
-                description=description,
-                user_id=str(message.from_user.id)
-            )
-            
-            # Отправляем подтверждение
-            await processing_msg.edit_text(
-                f"✅ Задача принята!\n"
-                f"📋 ID миссии: {mission_id}\n"
-                f"📝 Описание: {description}\n\n"
-                f"Я начну выполнение и сообщу о результатах."
-            )
-            
-            # Отправляем кнопки для отслеживания
-            keyboard = InlineKeyboardBuilder()
-            keyboard.add(InlineKeyboardButton(
-                text="Проверить статус",
-                callback_data=f"check_{mission_id}"
-            ))
-            
             await message.answer(
-                "Хотите отслеживать выполнение?",
-                reply_markup=keyboard.as_markup()
+                "❓ **Справка**\n\n"
+                "**Контент:**\n"
+                "• \"Напиши статью про [тема]\"\n"
+                "• \"Переведи на [язык]: [текст]\"\n"
+                "• \"Суммаризуй: [текст]\"\n\n"
+                "**Код:**\n"
+                "• \"Напиши [язык] код для [задача]\"\n"
+                "• \"Проведи code review: [код]\"\n"
+                "• \"Напиши тесты для: [код]\"\n\n"
+                "**Команды:**\n"
+                "/status — статус системы\n"
+                "/missions — список миссий",
+                parse_mode=ParseMode.MARKDOWN,
             )
-            
-        except Exception as e:
-            logger.error(f"Error handling mission: {e}")
-            await processing_msg.edit_text(
-                f"❌ Ошибка при обработке задачи:\n{str(e)}"
-            )    
-    async def _handle_approve(self, callback_query: types.CallbackQuery):
-        """Обработчик подтверждения"""
-        
-        task_id = callback_query.data.replace("approve_", "")
-        
-        await callback_query.answer("✅ Задача подтверждена!")
-        
-        # Здесь можно добавить логику подтверждения задачи
-        logger.info(f"Task {task_id} approved by user")
-        
-        await callback_query.message.edit_text(
-            f"✅ Задача {task_id} подтверждена и продолжит выполнение."
-        )
-    
-    async def _handle_reject(self, callback_query: types.CallbackQuery):
-        """Обработчик отклонения"""
-        
-        task_id = callback_query.data.replace("reject_", "")
-        
-        await callback_query.answer("❌ Задача отклонена")
-        
-        # Здесь можно добавить логику отклонения задачи
-        logger.info(f"Task {task_id} rejected by user")
-        
-        await callback_query.message.edit_text(
-            f"❌ Задача {task_id} отклонена. Пожалуйста, укажите причину или отправьте исправленную версию."
-        )
-    
-    async def send_notification(
-        self,
-        user_id: str,
-        message: str,
-        keyboard: Optional[InlineKeyboardMarkup] = None
-    ):
-        """Отправить уведомление пользователю"""
-        
+
+        @self.dp.message(F.text)
+        async def handle_message(message: types.Message):
+            """Обработка произвольных сообщений как миссий"""
+            if not self._is_admin(message.from_user.id):
+                await message.answer("⛔ Доступ только для администратора")
+                return
+
+            user_text = message.text.strip()
+            if len(user_text) < 10:
+                await message.answer("📝 Задача слишком короткая (минимум 10 символов)")
+                return
+
+            builder = InlineKeyboardBuilder()
+            builder.button(text="✅ Запустить", callback_data="confirm_mission")
+            builder.button(text="❌ Отменить", callback_data="cancel_mission")
+
+            self._active_missions[message.from_user.id] = user_text
+
+            await message.answer(
+                f"🎯 **Новая миссия:**\n\n{user_text[:500]}\n\nЗапустить?",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=builder.as_markup(),
+            )
+
+        @self.dp.callback_query(F.data == "confirm_mission")
+        async def confirm_mission(callback: types.CallbackQuery):
+            user_id = callback.from_user.id
+            mission_text = self._active_missions.pop(user_id, None)
+
+            if not mission_text:
+                await callback.answer("Миссия не найдена")
+                return
+
+            await callback.answer("🚀 Миссия запущена!")
+            await callback.message.edit_text(
+                f"🚀 **Миссия запущена!**\n\n{mission_text[:300]}...\n\n⏳ Ожидайте результатов...",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+            async def progress_callback(update_text: str):
+                try:
+                    await self.bot.send_message(user_id, update_text, parse_mode=ParseMode.MARKDOWN)
+                except Exception as e:
+                    logger.error(f"Progress callback error: {e}")
+
+            async def run_mission():
+                return await self.ceo.execute(mission_text, callback=progress_callback)
+
+            from src.core.config import Priority
+            task_id = await self.ceo.task_queue.submit(
+                name=f"Mission: {mission_text[:50]}",
+                handler=run_mission,
+                priority=Priority.HIGH,
+                callback=lambda task: self._send_result(user_id, task),
+            )
+
+            await self.bot.send_message(user_id, f"📋 ID: `{task_id}`", parse_mode=ParseMode.MARKDOWN)
+
+        @self.dp.callback_query(F.data == "cancel_mission")
+        async def cancel_mission(callback: types.CallbackQuery):
+            self._active_missions.pop(callback.from_user.id, None)
+            await callback.answer("Миссия отменена")
+            await callback.message.edit_text("❌ Миссия отменена")
+
+    async def _send_result(self, user_id: int, task):
+        """Отправка результата миссии"""
         try:
-            if keyboard:
-                await self.bot.send_message(
-                    chat_id=user_id,
-                    text=message,
-                    reply_markup=keyboard
-                )
+            if task.status.value == "completed" and task.result:
+                result = task.result
+                if result.success:
+                    report = result.data.get("report", "Миссия выполнена")
+                    cost = result.data.get("total_cost", 0)
+                    text = (
+                        f"✅ **Миссия выполнена!**\n\n{report[:3000]}\n\n"
+                        f"💰 Стоимость: ${cost:.4f}\n⏱ Время: {task.duration:.0f}с"
+                    )
+                else:
+                    text = f"❌ **Ошибка:**\n\n{result.error}"
             else:
-                await self.bot.send_message(
-                    chat_id=user_id,
-                    text=message
-                )
-        except Exception as e:            logger.error(f"Error sending notification to {user_id}: {e}")
-    
-    async def send_mission_complete(
-        self,
-        user_id: str,
-        mission_id: str,
-        report: Dict
-    ):
-        """Отправить отчет о завершении миссии"""
-        
-        report_text = f"""
-🎉 Миссия {mission_id} завершена!
+                text = f"❌ **Не выполнена:**\n\n{task.error or 'Unknown error'}"
 
-📊 Отчет:
-• Всего задач: {report.get("total_tasks", 0)}
-• Успешно: {report.get("completed_tasks", 0)}
-• Ошибок: {report.get("failed_tasks", 0)}
-• Успешность: {report.get("success_rate", "0%")}
-
-🕐 Время выполнения: {report.get("completed_at", "N/A")}
-
-Результаты готовы к просмотру!
-        """
-        
-        # Создаем клавиатуру
-        keyboard = InlineKeyboardBuilder()
-        keyboard.add(InlineKeyboardButton(
-            text="Посмотреть результаты",
-            callback_data=f"results_{mission_id}"
-        ))
-        
-        await self.send_notification(
-            user_id,
-            report_text,
-            keyboard.as_markup()
-        )
-    
-    async def run(self):
-        """Запустить бота"""
-        
-        logger.info("Starting Telegram Bot...")
-        
-        try:
-            await self.dp.start_polling(self.bot)
+            if len(text) > 4096:
+                chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+                for chunk in chunks:
+                    await self.bot.send_message(user_id, chunk, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await self.bot.send_message(user_id, text, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
-            logger.error(f"Error running Telegram Bot: {e}")
-            raise
-    
+            logger.error(f"Failed to send result: {e}")
+
+    def _is_admin(self, user_id: int) -> bool:
+        return user_id == settings.telegram_admin_id
+
+    async def start(self):
+        """Запуск бота"""
+        logger.info("Starting Telegram bot...")
+        await self.dp.start_polling(self.bot)
+
     async def stop(self):
-        """Остановить бота"""        
-        logger.info("Stopping Telegram Bot...")
+        """Остановка бота"""
         await self.bot.session.close()
