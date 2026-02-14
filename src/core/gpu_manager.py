@@ -1,158 +1,242 @@
 """
-GPU Manager - управление видеопамятью и загрузкой моделей
+ИИ-Корпорация 2.0 — GPU Manager
+Интеллектуальное управление видеопамятью и моделями
 """
-
-import torch
-import subprocess
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
-from loguru import logger
-import time
 import asyncio
-from asyncio import Lock
+import subprocess
+import time
+from dataclasses import dataclass, field
+from typing import Optional
+
+import aiohttp
+from loguru import logger
+
+from src.core.config import settings
 
 
 @dataclass
-class ModelInfo:
-    """Информация о модели"""
+class LoadedModel:
     name: str
-    vram_gb: float
-    quantization: str
-    priority: int
-    loaded: bool = False
-    load_time: Optional[float] = None
+    vram_usage_gb: float
+    last_used: float
+    request_count: int = 0
+
+
+@dataclass
+class GPUStatus:
+    total_vram_gb: float
+    used_vram_gb: float
+    free_vram_gb: float
+    temperature: int
+    utilization: int
+    loaded_models: list[str] = field(default_factory=list)
 
 
 class GPUManager:
-    """Менеджер управления видеопамятью"""
-    
-    def __init__(self, max_vram_gb: int = 24, reserved_vram_gb: int = 2):
-        self.max_vram_gb = max_vram_gb
-        self.reserved_vram_gb = reserved_vram_gb
-        self.available_vram_gb = max_vram_gb - reserved_vram_gb
-        
-        self.loaded_models: Dict[str, ModelInfo] = {}
-        self.model_queue: List[str] = []
-        self._lock = Lock()
-        
-        logger.info(f"GPU Manager initialized")
-        logger.info(f"Total VRAM: {max_vram_gb} GB")
-        logger.info(f"Available VRAM: {self.available_vram_gb} GB")
-    
-    def get_gpu_memory_usage(self) -> Tuple[float, float]:
-        """Получить использование видеопамяти"""
+    """Менеджер GPU с автоматической загрузкой/выгрузкой моделей"""
+
+    MODEL_VRAM_MAP: dict[str, float] = {
+        "qwen2.5:7b": 4.5,
+        "qwen2.5:14b": 9.0,
+        "qwen2.5:32b": 18.0,
+        "llama3.1:8b": 5.0,
+        "codellama:13b": 8.5,
+        "mistral:7b": 4.5,
+        "nomic-embed-text": 0.5,
+    }
+
+    def __init__(self):
+        self._loaded_models: dict[str, LoadedModel] = {}
+        self._lock = asyncio.Lock()
+        self._total_vram = settings.gpu_total_vram_gb
+        self._reserved = settings.gpu_reserved_vram_gb
+        self._available = self._total_vram - self._reserved
+
+    async def get_status(self) -> GPUStatus:
+        """Получение текущего статуса GPU через nvidia-smi"""
         try:
-            if torch.cuda.is_available():
-                total = torch.cuda.get_device_properties(0).total_memory / 1e9
-                allocated = torch.cuda.memory_allocated(0) / 1e9
-                cached = torch.cuda.memory_reserved(0) / 1e9
-                used = allocated + cached
-                return used, total            else:
-                return 0.0, self.max_vram_gb
-        except Exception as e:
-            logger.error(f"Error getting GPU memory: {e}")
-            return 0.0, self.max_vram_gb
-    
-    def check_vram_availability(self, required_vram_gb: float) -> bool:
-        """Проверить доступность видеопамяти"""
-        used_vram, _ = self.get_gpu_memory_usage()
-        available = self.available_vram_gb - used_vram
-        return available >= required_vram_gb
-    
-    async def load_model(self, model_name: str, model_config: Dict, timeout: int = 600) -> bool:
-        """Загрузить модель в память"""
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi",
+                "--query-gpu=memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu",
+                "--format=csv,noheader,nounits",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode != 0:
+                logger.warning(f"nvidia-smi failed: {stderr.decode()}")
+                return self._fallback_status()
+
+            values = stdout.decode().strip().split(", ")
+            return GPUStatus(
+                total_vram_gb=float(values[0]) / 1024,
+                used_vram_gb=float(values[1]) / 1024,
+                free_vram_gb=float(values[2]) / 1024,
+                temperature=int(values[3]),
+                utilization=int(values[4]),
+                loaded_models=list(self._loaded_models.keys()),
+            )
+        except FileNotFoundError:
+            logger.warning("nvidia-smi not found, using fallback")
+            return self._fallback_status()
+
+    def _fallback_status(self) -> GPUStatus:
+        """Статус без nvidia-smi (для разработки / Termux)"""
+        used = sum(m.vram_usage_gb for m in self._loaded_models.values())
+        return GPUStatus(
+            total_vram_gb=self._total_vram,
+            used_vram_gb=used + self._reserved,
+            free_vram_gb=self._total_vram - used - self._reserved,
+            temperature=0,
+            utilization=0,
+            loaded_models=list(self._loaded_models.keys()),
+        )
+
+    def _used_vram(self) -> float:
+        return sum(m.vram_usage_gb for m in self._loaded_models.values())
+
+    def _free_vram(self) -> float:
+        return self._available - self._used_vram()
+
+    async def ensure_model_loaded(self, model_name: str) -> bool:
+        """Гарантирует что модель загружена в VRAM"""
         async with self._lock:
-            try:
-                required_vram = model_config.get("vram_gb", 0)
-                
-                if not self.check_vram_availability(required_vram):
-                    logger.warning(f"Not enough VRAM to load {model_name}")
-                    return False
-                
-                model_full_name = f"{model_config["name"]}:{model_config.get("quantization", "latest")}"
-                logger.info(f"Loading model: {model_full_name}")
-                
-                process = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(
-                        "ollama", "pull", model_full_name,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    ),
-                    timeout=timeout
+            # Модель уже загружена
+            if model_name in self._loaded_models:
+                self._loaded_models[model_name].last_used = time.time()
+                self._loaded_models[model_name].request_count += 1
+                logger.debug(f"Model {model_name} already loaded")
+                return True
+
+            required_vram = self.MODEL_VRAM_MAP.get(model_name, 8.0)
+
+            # Проверяем влезет ли модель вообще
+            if required_vram > self._available:
+                logger.error(
+                    f"Model {model_name} requires {required_vram}GB "
+                    f"but only {self._available}GB available total"
                 )
-                
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=timeout
-                )
-                
-                if process.returncode != 0:
-                    logger.error(f"Failed to load model {model_name}")
+                return False
+
+            # Освобождаем память если нужно
+            while self._free_vram() < required_vram:
+                evicted = await self._evict_least_used()
+                if not evicted:
+                    logger.error("Cannot free enough VRAM")
                     return False
-                
-                model_info = ModelInfo(
+
+            # Загружаем модель
+            success = await self._load_model_ollama(model_name)
+            if success:
+                self._loaded_models[model_name] = LoadedModel(
                     name=model_name,
-                    vram_gb=required_vram,
-                    quantization=model_config.get("quantization", "latest"),
-                    priority=model_config.get("priority", 1),
-                    loaded=True,
-                    load_time=time.time()                )
-                
-                self.loaded_models[model_name] = model_info
-                logger.success(f"Model {model_name} loaded successfully")
-                return True
-                
-            except Exception as e:
-                logger.error(f"Error loading model {model_name}: {e}")
-                return False
-    
-    async def unload_model(self, model_name: str) -> bool:
-        """Выгрузить модель из памяти"""
-        async with self._lock:
-            try:
-                if model_name not in self.loaded_models:
-                    return False
-                
-                logger.info(f"Unloading model: {model_name}")
-                
-                process = await asyncio.create_subprocess_exec(
-                    "ollama", "rm", self.loaded_models[model_name].name,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    vram_usage_gb=required_vram,
+                    last_used=time.time(),
+                    request_count=1,
                 )
-                
-                stdout, stderr = await process.communicate()
-                
-                if process.returncode != 0:
-                    logger.error(f"Failed to unload model {model_name}")
-                    return False
-                
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-                del self.loaded_models[model_name]
-                logger.success(f"Model {model_name} unloaded successfully")
-                return True
-                
-            except Exception as e:
-                logger.error(f"Error unloading model {model_name}: {e}")
-                return False
-    
-    def get_status(self) -> Dict:
-        """Получить статус менеджера"""
-        used_vram, total_vram = self.get_gpu_memory_usage()
-        
-        return {
-            "total_vram_gb": self.max_vram_gb,
-            "used_vram_gb": used_vram,
-            "available_vram_gb": self.available_vram_gb - used_vram,            "loaded_models": [
-                {
-                    "name": info.name,
-                    "vram_gb": info.vram_gb,
-                    "priority": info.priority,
-                    "load_time": info.load_time
-                }
-                for info in self.loaded_models.values()
+                logger.info(
+                    f"Loaded {model_name} "
+                    f"({required_vram}GB, "
+                    f"free: {self._free_vram():.1f}GB)"
+                )
+            return success
+
+    async def _evict_least_used(self) -> bool:
+        """Выгружает наименее используемую модель"""
+        if not self._loaded_models:
+            return False
+
+        least_used = min(
+            self._loaded_models.values(),
+            key=lambda m: (m.request_count, m.last_used),
+        )
+
+        logger.info(
+            f"Evicting model {least_used.name} "
+            f"to free {least_used.vram_usage_gb}GB"
+        )
+
+        await self._unload_model_ollama(least_used.name)
+        del self._loaded_models[least_used.name]
+        return True
+
+    async def _load_model_ollama(self, model_name: str) -> bool:
+        """Загрузка модели через Ollama"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{settings.ollama_base_url}/api/generate",
+                    json={
+                        "model": model_name,
+                        "prompt": "hi",
+                        "stream": False,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=300),
+                ) as resp:
+                    if resp.status == 200:
+                        return True
+                    else:
+                        error = await resp.text()
+                        logger.error(f"Failed to load {model_name}: {error}")
+                        return False
+        except Exception as e:
+            logger.error(f"Error loading model {model_name}: {e}")
+            return False
+
+    async def _unload_model_ollama(self, model_name: str) -> None:
+        """Выгрузка модели из VRAM"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{settings.ollama_base_url}/api/generate",
+                    json={
+                        "model": model_name,
+                        "prompt": "",
+                        "keep_alive": 0,
+                    },
+                ) as resp:
+                    pass
+        except Exception as e:
+            logger.warning(f"Error unloading {model_name}: {e}")
+
+    async def get_recommendation(self, task_complexity: str) -> str:
+        """Рекомендация модели на основе сложности и ресурсов"""
+        free = self._free_vram()
+
+        recommendations = {
+            "simple": [
+                ("qwen2.5:7b", 4.5),
+                ("mistral:7b", 4.5),
             ],
-            "model_count": len(self.loaded_models)
+            "medium": [
+                ("qwen2.5:14b", 9.0),
+                ("codellama:13b", 8.5),
+            ],
+            "complex": [
+                ("qwen2.5:32b", 18.0),
+            ],
         }
+
+        candidates = recommendations.get(
+            task_complexity, recommendations["medium"]
+        )
+
+        # Предпочитаем уже загруженную модель
+        for model, vram in candidates:
+            if model in self._loaded_models:
+                return model
+
+        # Иначе — ту что влезет
+        for model, vram in candidates:
+            if vram <= free:
+                return model
+
+        # Если локальные не помещаются — облако
+        if settings.anthropic_api_key:
+            return "claude-3-5-sonnet-20241022"
+        if settings.openai_api_key:
+            return "gpt-4o"
+
+        # Последний вариант — выгрузить и загрузить
+        return candidates[0][0]
